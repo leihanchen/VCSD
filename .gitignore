@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# training artifacts / data (not distributed)
+checkpoints/
+data/
+logs/
+outputs/
+rollouts/
+tensorboard_log/
+wandb/
+*.parquet
+*.pt
+*.safetensors
+
+# secrets — never commit
+*.conf
+*.env
+.env
+config/key.conf
