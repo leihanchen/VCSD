@@ -1,40 +1,73 @@
-# VCSD — Visual Contrast Self-Distillation for VLMs
+# Visual Contrast Self-Distillation (VCSD)
 
-Training code for **contrast-sharpened self-distillation** ("ours"): an RL fine-tuning method for
-vision-language models that sharpens the model's own visual grounding by distilling toward a
-**contrast target** built from the gap between a normal-image teacher pass and a control
-(e.g. blacked-out image) pass.
+![Cover Figure overview](assets/teasor.png)
+Code for our work-in-progress paper **Visual Contrast Self-Distillation for Vision-Language
+Models**.
 
-This code is derived from [VisionOPD/Vision-OPD](https://github.com/VisionOPD/Vision-OPD), which is
-itself built on the [verl](https://github.com/volcengine/verl) GRPO/PPO trainer (the `verl/` package
-here). The VCSD method-specific code lives in a few files; everything else is the inherited RL
-framework. See [Acknowledgments](#acknowledgments).
+[**Paper**](https://arxiv.org/abs/2607.21556) | [**Project Page**](https://joliang17.github.io/VisualCSD/)
 
-## Method in one paragraph
+> 🚧 **Work in progress.** Both the **paper and the code are still in progress**  and this repository is under active development (code, configs, and documentation may change; some components are still being cleaned up and released). Please check back for updates.
 
-For each token, we form a contrast-sharpened distillation target
+
+
+## Highlights
+
+🎯 Self-Distillation from a Visual Contrast: The model teaches itself by contrasting its own teacher pass on the real image against a control pass (image removed / blacked-out / degraded), sharpening exactly the predictions that depend on seeing the image.
+
+🧭 Plausibility-Guarded Target: The contrast-sharpened target is restricted to the teacher's β-plausibility set, so probability mass is only redistributed among tokens the plain teacher already finds plausible — the student is never taught a token the teacher would not produce.
+
+⚙️ Minimal, Drop-in RL Objective: A single token-averaged full-vocab KL toward the contrast target (no per-token reweighting, no gating) added to a standard GRPO/PPO loop — a few files on top of an inherited [verl](https://github.com/volcengine/verl) trainer.
+
+
+## Method Overview
+![VCSD overview](assets/method.png)
+
+For each response token, VCSD forms a contrast-sharpened distillation target
 
 ```
-target = softmax( log p_hi + α · (log p_hi − log p_ctrl) )
+target = softmax( anchor · log p_hi + α · (log p_hi − log p_ctrl) )   over  { w : p_hi(w) ≥ β · max p_hi }
 ```
 
-where `p_hi` is the teacher distribution on the real image and `p_ctrl` is the teacher distribution
-on a control input (image removed / blacked-out / degraded). A **β-plausibility mask** restricts the
-support to `{w : p_hi(w) ≥ β · max p_hi}`, so mass is only redistributed among tokens the plain
-teacher already considers plausible. The student is trained toward this target with a plain
-**token-averaged full-vocab KL** over the response (no per-token reweighting, no gating), alongside
-the RL objective.
+where `p_hi` is the EMA-teacher distribution on the real image and `p_ctrl` is the teacher
+distribution on a control input (image removed / blacked-out / degraded). The tilt `α·(log p_hi −
+log p_ctrl)` amplifies exactly the tokens that change when the image is present, and the
+β-plausibility mask confines the support to tokens the plain teacher already considers plausible.
+The student is trained toward this target with a plain **token-averaged full-vocab KL** over the
+response mask, alongside the RL objective.
 
-## Key files
+The method-specific code is small; everything under `verl/` is the inherited RL framework:
 
 | File | Role |
 |---|---|
 | `verl/trainer/ppo/vcsd.py` | `build_contrast_target` + token-averaged `vcsd_kd_loss` |
 | `verl/workers/actor/dp_actor.py` | teacher hi/ctrl forward passes + distillation loss call |
-| `verl/workers/config/actor.py` · `verl/trainer/config/actor/actor.yaml` | `vcsd_*` config knobs |
-| `verl/trainer/config/vopd.yaml` | training config (hydra) |
-| `scripts/run_vcsd.sh` | training entry point (env-driven, hydra overrides) |
-| `scripts/run_experiment_contrast_standard.sh` | launcher: `α=1.0`, `β=0.1`, black-image control |
+| `verl/workers/config/actor.py`, `verl/trainer/config/actor/actor.yaml` | `vcsd_*` config knobs |
+| `scripts/run_experiment_contrast_standard.sh` | training launcher (α=1.0, β=0.1, black-image control) |
+
+
+## Repository Structure
+
+```text
+VCSD/
+|-- verl/                                       # inherited GRPO/PPO RL framework
+|   |-- trainer/
+|   |   |-- ppo/vcsd.py                          # VCSD contrast target + KD loss
+|   |   `-- config/vopd.yaml                     # training config (hydra)
+|   `-- workers/
+|       |-- actor/dp_actor.py                    # teacher passes + loss call
+|       `-- config/actor.py                      # vcsd_* config schema
+|-- scripts/
+|   |-- run_experiment_contrast_standard.sh      # VCSD training launcher
+|   |-- run_vcsd.sh                              # underlying training entry point
+|   |-- prepare_answer_val_split.py              # data prep
+|   |-- prepare_degraded_images.py               # degrade-control image prep
+|   `-- mcq_exact_reward.py                      # reward helper
+|-- chat_templates/
+|-- requirements.txt
+|-- pyproject.toml
+`-- LICENSE
+```
+
 
 ## Setup
 
@@ -46,18 +79,20 @@ pip install -r requirements.txt
 Requires a CUDA GPU stack compatible with the pinned `torch` / `vllm` / `flash-attn` in
 `requirements.txt` (see the notes there for building flash-attn / causal-conv1d from source).
 
+
 ## Data
 
 Training expects Parquet files under a `DATA_DIR` (default `data/`):
 
 - `train.parquet` — training prompts with an image column
-- `train_answer.parquet` / `val_answer.parquet` — answer-conditioned val splits
+- `train_answer.parquet` / `val_answer.parquet` — answer-conditioned validation splits
 
-Prepare helpers are in `scripts/` (`prepare_answer_val_split.py`,
-`prepare_degraded_images.py`). Datasets are **not** included in this repo — point `TASK_TRAIN_FILE`
-/ `ANSWER_VAL_TRAIN_FILE` at your own Parquet files.
+Prepare helpers live in `scripts/` (`prepare_answer_val_split.py`, `prepare_degraded_images.py`).
+Model checkpoints, datasets, caches, and generated outputs are intentionally **not** included in
+this repository — point `TASK_TRAIN_FILE` / `ANSWER_VAL_TRAIN_FILE` at your own Parquet files.
 
-## Train ("ours")
+
+## Training
 
 ```bash
 MODEL_SIZE=2B \
@@ -76,18 +111,37 @@ Key method knobs (hydra overrides, defaults set by the launcher):
 - `...vcsd_contrast_alpha=1.0` — tilt strength α
 - `...vcsd_contrast_beta=0.1` — plausibility mask β (set `0.0` to disable → training collapses)
 - `...vcsd_ctrl_mode=black` — control input (`black` / `degrade` / `noimg`)
-- `...vcsd_contrast_exclude_token_ids=[151643,151645]` — vocab ids exempt from the tilt (EOS/im_end)
+- `...vcsd_contrast_exclude_token_ids=[151643,151645]` — vocab ids exempt from the tilt (EOS / im_end)
 
 Checkpoints land in `checkpoints/<EXPERIMENT_NAME>/global_step_*`; merge FSDP shards with
-`python -m verl.model_merger merge --backend fsdp --local_dir <ckpt>/actor --target_dir <ckpt>`.
+
+```bash
+python -m verl.model_merger merge --backend fsdp --local_dir <ckpt>/actor --target_dir <ckpt>
+```
+
 
 ## Acknowledgments
 
-This repository is based on [VisionOPD/Vision-OPD](https://github.com/VisionOPD/Vision-OPD) and the
-[verl](https://github.com/volcengine/verl) reinforcement-learning framework it builds on. The `verl/`
-package here is inherited from those projects; VCSD adds the contrast-sharpened self-distillation
-target and loss (`verl/trainer/ppo/vcsd.py`, the `vcsd_*` config knobs, and the training launchers).
-We thank the authors of both projects.
+This repository is derived from [VisionOPD/Vision-OPD](https://github.com/VisionOPD/Vision-OPD) and
+the [verl](https://github.com/volcengine/verl) reinforcement-learning framework it builds on. The
+`verl/` package here is inherited from those projects; VCSD adds the contrast-sharpened
+self-distillation target and loss. We thank the authors of both projects.
+
+
+## Citation
+
+```bibtex
+@misc{liang2026visualcontrastiveselfdistillation,
+      title={Visual Contrastive Self-Distillation}, 
+      author={Yijun Liang and Yunjie Tian and Yijiang Li and Yuqi Jia and Furong Huang and Tianyi Zhou and Di Fu},
+      year={2026},
+      eprint={2607.21556},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2607.21556}, 
+}
+```
+
 
 ## License
 
