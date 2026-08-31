@@ -1,0 +1,152 @@
+Bootstrap: docker
+From: nvidia/cuda:13.0.3-cudnn-devel-ubuntu24.04
+
+%labels
+    Author VCSD
+    Description "VCSD training environment (Ubuntu 24.04, CUDA 13.0, PyTorch 2.10, vLLM 0.18)"
+
+%help
+    This image contains the CUDA/Python dependencies needed to train VCSD.
+
+    Build from the repository root:
+        apptainer build --fakeroot VCSD.sif VCSD.def
+
+    The repository is intentionally bind-mounted at runtime instead of copied
+    into the image. The provided Slurm script mounts it at /opt/VCSD and runs:
+        apptainer exec --nv VCSD.sif bash /opt/VCSD/scripts/run_experiment_contrast_standard_spar_vero_rl.sh
+
+    CUDA 13 applications require a host NVIDIA driver that supports CUDA 13.
+    Apptainer --nv supplies the host driver libraries and GPU devices.
+
+%files
+    requirements.txt /opt/vcsd-build/requirements.txt
+
+%environment
+    export LANG=C.UTF-8
+    export LC_ALL=C.UTF-8
+    export VIRTUAL_ENV=/opt/vcsd
+    export CUDA_HOME=/usr/local/cuda
+    export PATH=/opt/vcsd/bin:/usr/local/cuda/bin:$PATH
+    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
+    export PYTHONPATH=/opt/VCSD:${PYTHONPATH:-}
+    export PYTHONNOUSERSITE=1
+    export PYTHONUNBUFFERED=1
+    export HF_HUB_OFFLINE=0
+    export TRANSFORMERS_OFFLINE=0
+    export HF_DATASETS_OFFLINE=0
+
+%post
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        bash \
+        build-essential \
+        ca-certificates \
+        cmake \
+        curl \
+        ffmpeg \
+        git \
+        libegl1 \
+        libgl1 \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
+        ninja-build \
+        pkg-config \
+        python3 \
+        python3-dev \
+        python3-pip \
+        python3-venv \
+        wget
+    rm -rf /var/lib/apt/lists/*
+
+    python3 -m venv /opt/vcsd
+    export VIRTUAL_ENV=/opt/vcsd
+    export CUDA_HOME=/usr/local/cuda
+    export PATH=/opt/vcsd/bin:/usr/local/cuda/bin:$PATH
+    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
+    export TORCH_CUDA_ARCH_LIST=9.0
+    # FlashAttention has its own architecture selector and otherwise builds
+    # kernels for several GPU generations. This job targets H100 (SM90).
+    export FLASH_ATTN_CUDA_ARCHS=90
+    # Keep native extension builds within login/build-node memory limits.
+    export MAX_JOBS=1
+    export NVCC_THREADS=1
+
+    python -m pip install --no-cache-dir --upgrade pip setuptools wheel packaging ninja
+
+    # Use the CUDA 13.0 PyTorch wheels explicitly. This matches the CUDA 13.0
+    # toolkit in the base image and the versions pinned by requirements.txt.
+    python -m pip install --no-cache-dir \
+        torch==2.10.0 \
+        torchvision==0.25.0 \
+        torchaudio==2.10.0 \
+        --index-url https://download.pytorch.org/whl/cu130
+
+    # vLLM 0.18 declares transformers>=4.56,<5. Qwen3-VL targets the 4.57
+    # series, so pin its latest compatible patch before resolving vLLM.
+    python -m pip install --no-cache-dir transformers==4.57.6
+
+    # vLLM's normal PyPI wheel is built for a different CUDA variant. Install
+    # the official v0.18.0 CUDA 13.0 wheel so its compiled kernels match torch.
+    python -m pip install --no-cache-dir \
+        "https://github.com/vllm-project/vllm/releases/download/v0.18.0/vllm-0.18.0%2Bcu130-cp38-abi3-manylinux_2_35_x86_64.whl" \
+        --extra-index-url https://download.pytorch.org/whl/cu130
+
+    # Install the remaining repository pins and runtime packages used directly
+    # by the inherited verl trainer and the Qwen-VL dataset path.
+    python -m pip install --no-cache-dir \
+        -r /opt/vcsd-build/requirements.txt \
+        --extra-index-url https://download.pytorch.org/whl/cu130
+    python -m pip install --no-cache-dir \
+        accelerate \
+        pandas \
+        peft \
+        qwen-vl-utils \
+        tensorboard \
+        wandb
+
+    # Rebuild CUDA extensions against this exact torch/CUDA installation, as
+    # required by the repository README and requirements.txt notes.
+    python -m pip install --no-cache-dir --no-build-isolation \
+        --force-reinstall --no-deps --no-binary=flash-attn \
+        flash-attn==2.8.3.post1
+    python -m pip install --no-cache-dir --no-build-isolation \
+        --force-reinstall --no-deps --no-binary=causal-conv1d \
+        causal-conv1d==1.6.1
+
+    python -m pip check
+    python - <<'PY'
+import importlib.metadata as metadata
+import torch
+
+assert metadata.version("torch").startswith("2.10.0"), metadata.version("torch")
+assert metadata.version("vllm").startswith("0.18.0"), metadata.version("vllm")
+assert metadata.version("transformers") == "4.57.6", metadata.version("transformers")
+assert torch.backends.cuda.is_built(), "PyTorch was built without CUDA"
+assert torch.version.cuda == "13.0", torch.version.cuda
+print("torch:", torch.__version__)
+print("torch CUDA:", torch.version.cuda)
+print("vLLM:", metadata.version("vllm"))
+print("Transformers:", metadata.version("transformers"))
+PY
+
+    rm -rf /root/.cache/pip /opt/vcsd-build
+
+%test
+    . /opt/vcsd/bin/activate
+    python - <<'PY'
+import importlib.metadata as metadata
+import torch
+
+assert torch.backends.cuda.is_built()
+assert torch.version.cuda == "13.0", torch.version.cuda
+assert metadata.version("vllm").startswith("0.18.0")
+assert metadata.version("transformers") == "4.57.6"
+PY
+
+%runscript
+    exec /bin/bash "$@"
