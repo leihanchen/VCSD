@@ -8,7 +8,10 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --gpus-per-node=h100:2
 #SBATCH --time=8:00:00
-#SBATCH --mem=256G
+# Job 57684347 OOMed at the 192G cap during the first 96x8 multimodal rollout.
+# Keep the worker-count safeguards and provide enough host RAM for the rollout
+# payloads while retaining a conservative per-step batch size.
+#SBATCH --mem=512G
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=leihan.chen@torontomu.ca
 
@@ -95,10 +98,23 @@ export SPAR_VAL_BATCH_SIZE="${SPAR_VAL_BATCH_SIZE:-16}"
 export SPAR_VAL_TEST_FREQ="${SPAR_VAL_TEST_FREQ:-10}"
 export SPAR_VAL_BEFORE_TRAIN="${SPAR_VAL_BEFORE_TRAIN:-True}"
 export TRAINER_N_GPUS_PER_NODE="${TRAINER_N_GPUS_PER_NODE:-${SLURM_GPUS_ON_NODE:-2}}"
-export DATA_DATALOADER_NUM_WORKERS="${DATA_DATALOADER_NUM_WORKERS:-${SLURM_CPUS_PER_TASK:-32}}"
-export SPAR_FILTER_WORKERS="${SPAR_FILTER_WORKERS:-${SLURM_CPUS_PER_TASK:-32}}"
+# Do not map SLURM_CPUS_PER_TASK onto Python workers. 32 filter + 32 dataloader
+# processes were the 57542414 host-RAM cliff; keep both at four.
+export DATA_DATALOADER_NUM_WORKERS="${DATA_DATALOADER_NUM_WORKERS:-4}"
+export SPAR_FILTER_WORKERS="${SPAR_FILTER_WORKERS:-4}"
+export ROLLOUT_AGENT_NUM_WORKERS="${ROLLOUT_AGENT_NUM_WORKERS:-4}"
+export TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-16}"
+export PPO_MIMI_BATCH_SIZE="${PPO_MIMI_BATCH_SIZE:-16}"
+export ROLLOUT_N="${ROLLOUT_N:-8}"
 export MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-16384}"
 export MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-2048}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
+# Ray 2.53.0 does not consume RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION;
+# pass an explicit ray.init object_store_memory override below instead.
+export RAY_OBJECT_STORE_MEMORY_BYTES="${RAY_OBJECT_STORE_MEMORY_BYTES:-8589934592}"
 
 mkdir -p "$HF_HUB_CACHE" "$HF_DATASETS_CACHE" "$DATASET_DIR"
 
@@ -139,8 +155,17 @@ pass_into_container SPAR_VAL_BEFORE_TRAIN "$SPAR_VAL_BEFORE_TRAIN"
 pass_into_container TRAINER_N_GPUS_PER_NODE "$TRAINER_N_GPUS_PER_NODE"
 pass_into_container DATA_DATALOADER_NUM_WORKERS "$DATA_DATALOADER_NUM_WORKERS"
 pass_into_container SPAR_FILTER_WORKERS "$SPAR_FILTER_WORKERS"
+pass_into_container ROLLOUT_AGENT_NUM_WORKERS "$ROLLOUT_AGENT_NUM_WORKERS"
+pass_into_container TRAIN_BATCH_SIZE "$TRAIN_BATCH_SIZE"
+pass_into_container PPO_MIMI_BATCH_SIZE "$PPO_MIMI_BATCH_SIZE"
+pass_into_container ROLLOUT_N "$ROLLOUT_N"
 pass_into_container MAX_PROMPT_LENGTH "$MAX_PROMPT_LENGTH"
 pass_into_container MAX_RESPONSE_LENGTH "$MAX_RESPONSE_LENGTH"
+pass_into_container OMP_NUM_THREADS "$OMP_NUM_THREADS"
+pass_into_container MKL_NUM_THREADS "$MKL_NUM_THREADS"
+pass_into_container OPENBLAS_NUM_THREADS "$OPENBLAS_NUM_THREADS"
+pass_into_container TOKENIZERS_PARALLELISM "$TOKENIZERS_PARALLELISM"
+pass_into_container RAY_OBJECT_STORE_MEMORY_BYTES "$RAY_OBJECT_STORE_MEMORY_BYTES"
 pass_into_container PREPEND_PATH /opt/vcsd/bin
 pass_into_container WANDB_ENABLE "$WANDB_ENABLE"
 pass_into_container WANDB_MODE "$WANDB_MODE"
@@ -165,7 +190,9 @@ echo "TLS CA bundle: $CA_BUNDLE"
 echo "Dataset cache: $DATASET_DIR"
 echo "SPAR image root: $SPAR_IMAGE_ROOT"
 echo "SPAR validation: $SPAR_VAL_ENABLE (every $SPAR_VAL_TEST_FREQ steps)"
-echo "CPUs: ${SLURM_CPUS_PER_TASK:-unknown}  dataloader workers: $DATA_DATALOADER_NUM_WORKERS  filter workers: $SPAR_FILTER_WORKERS"
+echo "CPUs: ${SLURM_CPUS_PER_TASK:-unknown}  mem=${SLURM_MEM_PER_NODE:-512G}  dataloader workers: $DATA_DATALOADER_NUM_WORKERS  filter workers: $SPAR_FILTER_WORKERS  agent workers: $ROLLOUT_AGENT_NUM_WORKERS"
+echo "Batch: train=$TRAIN_BATCH_SIZE  ppo_mini=$PPO_MIMI_BATCH_SIZE  rollout_n=$ROLLOUT_N"
+echo "Threads: OMP=$OMP_NUM_THREADS  TOKENIZERS_PARALLELISM=$TOKENIZERS_PARALLELISM  ray object store bytes=$RAY_OBJECT_STORE_MEMORY_BYTES"
 echo "Max tokens: prompt=$MAX_PROMPT_LENGTH response=$MAX_RESPONSE_LENGTH"
 echo "W&B: enable=$WANDB_ENABLE mode=$WANDB_MODE project=$WANDB_PROJECT entity=$WANDB_ENTITY"
 
@@ -178,7 +205,9 @@ srun "$CONTAINER_CMD" exec --nv \
     --bind /etc/pki:/etc/pki:ro \
     --pwd "$CONTAINER_ROOT" \
     "$VCSD_IMAGE" \
-    bash "$CONTAINER_TRAIN_SCRIPT" "$@"
+    bash "$CONTAINER_TRAIN_SCRIPT" \
+    "+ray_kwargs.ray_init.object_store_memory=${RAY_OBJECT_STORE_MEMORY_BYTES}" \
+    "$@"
 
 end_time=$(date +%s)
 duration=$((end_time - start_time))
