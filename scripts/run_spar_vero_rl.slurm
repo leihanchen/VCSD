@@ -7,7 +7,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gpus-per-node=h100:2
-#SBATCH --time=8:00:00
+#SBATCH --time=4:00:00
 # Job 57684347 OOMed at the 192G cap during the first 96x8 multimodal rollout.
 # Keep the worker-count safeguards and provide enough host RAM for the rollout
 # payloads while retaining a conservative per-step batch size.
@@ -103,11 +103,11 @@ export TRAINER_N_GPUS_PER_NODE="${TRAINER_N_GPUS_PER_NODE:-${SLURM_GPUS_ON_NODE:
 export DATA_DATALOADER_NUM_WORKERS="${DATA_DATALOADER_NUM_WORKERS:-4}"
 export SPAR_FILTER_WORKERS="${SPAR_FILTER_WORKERS:-4}"
 export ROLLOUT_AGENT_NUM_WORKERS="${ROLLOUT_AGENT_NUM_WORKERS:-4}"
-export TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-16}"
-export PPO_MIMI_BATCH_SIZE="${PPO_MIMI_BATCH_SIZE:-16}"
-export ROLLOUT_N="${ROLLOUT_N:-8}"
-export MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-16384}"
-export MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-2048}"
+export TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-4}"
+export PPO_MIMI_BATCH_SIZE="${PPO_MIMI_BATCH_SIZE:-4}"
+export ROLLOUT_N="${ROLLOUT_N:-4}"
+export MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-8192}"
+export MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-1024}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
 export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
