@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from io import BytesIO
+from pathlib import Path
 from typing import Optional
 
 import torch
@@ -20,11 +21,14 @@ from PIL import Image
 from qwen_vl_utils import fetch_image, fetch_video
 
 
-def process_image(image: dict | Image.Image, image_patch_size: int = 14) -> Image.Image:
+def process_image(image: dict | Image.Image | str | Path, image_patch_size: int = 14) -> Image.Image:
     if isinstance(image, Image.Image):
         return image.convert("RGB")
 
-    image = dict(image)
+    if isinstance(image, (str, Path)):
+        image = {"image": str(image)}
+    else:
+        image = dict(image)
     image_bytes = image.get("bytes", None)
     if image_bytes is not None:
         assert "image" not in image, "Cannot have both `bytes` and `image`"

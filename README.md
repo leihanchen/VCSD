@@ -79,6 +79,18 @@ pip install -r requirements.txt
 Requires a CUDA GPU stack compatible with the pinned `torch` / `vllm` / `flash-attn` in
 `requirements.txt` (see the notes there for building flash-attn / causal-conv1d from source).
 
+For an isolated Apptainer environment on an NVIDIA cluster, build the supplied Ubuntu 24.04 / CUDA
+13.0 image from the repository root:
+
+```bash
+apptainer build --fakeroot VCSD.sif VCSD.def
+```
+
+The image uses the official CUDA 13.0 PyTorch and vLLM wheels and builds `flash-attn` and
+`causal-conv1d` against that stack. At runtime, `apptainer --nv` injects the host NVIDIA driver;
+the compute node therefore needs a driver that supports CUDA 13 applications. The SPAR-Vero-RL
+Slurm launcher mounts the working tree and Hugging Face cache into this image automatically.
+
 
 ## Data
 
@@ -104,6 +116,15 @@ ANSWER_VAL_TRAIN_FILE=data/train.parquet \
 bash scripts/run_experiment_contrast_standard.sh \
   data.filter_overlong_prompts=True trainer.total_training_steps=150
 ```
+
+For the local `cvis-tmu/spar-vero-rl` data prepared under `data/`, submit the containerized job with:
+
+```bash
+sbatch scripts/run_spar_vero_rl.slurm
+```
+
+By default the job expects `VCSD.sif` in the repository root. Override it with
+`sbatch --export=ALL,VCSD_IMAGE=/absolute/path/to/VCSD.sif scripts/run_spar_vero_rl.slurm`.
 
 Key method knobs (hydra overrides, defaults set by the launcher):
 
