@@ -7,10 +7,11 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gpus-per-node=h100:2
-#SBATCH --time=4:00:00
+#SBATCH --time=8:00:00
 # Job 57684347 OOMed at the 192G cap during the first 96x8 multimodal rollout.
 # Keep the worker-count safeguards and provide enough host RAM for the rollout
 # payloads while retaining a conservative per-step batch size.
+# Job 57796193 timed out after 4h at ~57% of the 8192-token prompt filter.
 #SBATCH --mem=512G
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=leihan.chen@torontomu.ca
@@ -99,9 +100,10 @@ export SPAR_VAL_TEST_FREQ="${SPAR_VAL_TEST_FREQ:-10}"
 export SPAR_VAL_BEFORE_TRAIN="${SPAR_VAL_BEFORE_TRAIN:-True}"
 export TRAINER_N_GPUS_PER_NODE="${TRAINER_N_GPUS_PER_NODE:-${SLURM_GPUS_ON_NODE:-2}}"
 # Do not map SLURM_CPUS_PER_TASK onto Python workers. 32 filter + 32 dataloader
-# processes were the 57542414 host-RAM cliff; keep both at four.
+# processes were the 57542414 host-RAM cliff. Keep dataloader workers at four;
+# raise prompt-filter workers to 16 so the 8192-token VL filter can finish.
 export DATA_DATALOADER_NUM_WORKERS="${DATA_DATALOADER_NUM_WORKERS:-4}"
-export SPAR_FILTER_WORKERS="${SPAR_FILTER_WORKERS:-4}"
+export SPAR_FILTER_WORKERS="${SPAR_FILTER_WORKERS:-16}"
 export ROLLOUT_AGENT_NUM_WORKERS="${ROLLOUT_AGENT_NUM_WORKERS:-4}"
 export TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-4}"
 export PPO_MIMI_BATCH_SIZE="${PPO_MIMI_BATCH_SIZE:-4}"
