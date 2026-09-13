@@ -202,12 +202,17 @@ class RLHFDataset(Dataset):
                         raw_prompt = self.processor.apply_chat_template(
                             messages, add_generation_prompt=True, tokenize=False, **apply_kwargs
                         )
-                        if image_key in doc and doc[image_key]:
+                        # Adapters such as SparVeroRLDataset convert relative paths in
+                        # `_build_messages` and pop them into message content. Prefer those
+                        # converted records; falling back to the raw parquet field would pass
+                        # path strings into process_image and drop the whole dataset.
+                        images = self._images_from_messages(
+                            messages, image_patch_size=self.image_patch_size, process_image=process_image
+                        )
+                        if images is None and image_key in doc and doc[image_key]:
                             images = [
                                 process_image(image, image_patch_size=self.image_patch_size) for image in doc[image_key]
                             ]
-                        else:
-                            images = None
 
                         if video_key in doc and doc[video_key]:
                             videos, video_metadata = zip(
@@ -282,6 +287,18 @@ class RLHFDataset(Dataset):
 
     def __len__(self):
         return len(self.dataframe)
+
+    @staticmethod
+    def _images_from_messages(messages: list, image_patch_size: int, process_image):
+        images = []
+        for message in messages:
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image":
+                    images.append(process_image(part, image_patch_size=image_patch_size))
+        return images or None
 
     def _build_messages(self, example: dict):
         """Replace <image> and <video> placeholder in messages with corresponding image and video
