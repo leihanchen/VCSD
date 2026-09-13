@@ -12,7 +12,9 @@
 # Keep the worker-count safeguards and provide enough host RAM for the rollout
 # payloads while retaining a conservative per-step batch size.
 # Job 57796193 timed out after 4h at ~57% of the 8192-token prompt filter.
-#SBATCH --mem=512G
+# Use scripts/precompute_spar_vero_rl_filtered.slurm first, then train on
+# data/spar-vero-rl-filtered with filter_overlong_prompts=False.
+#SBATCH --mem=256G
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=leihan.chen@torontomu.ca
 
@@ -92,7 +94,9 @@ export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-0}"
 export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-0}"
 export HF_DATASETS_OFFLINE="${HF_DATASETS_OFFLINE:-0}"
 export MODEL_PATH="${MODEL_PATH:-Qwen/Qwen3-VL-2B-Instruct}"
-export DATASET_DIR="${DATASET_DIR:-${REPO_ROOT}/data/spar-vero-rl}"
+export DATASET_ID="${DATASET_ID:-cvis-tmu/spar-vero-rl-filtered}"
+export DATASET_DIR="${DATASET_DIR:-${REPO_ROOT}/data/spar-vero-rl-filtered}"
+export FILTER_OVERLONG_PROMPTS="${FILTER_OVERLONG_PROMPTS:-False}"
 export SPAR_IMAGE_ROOT="${SPAR_IMAGE_ROOT:-${REPO_ROOT}/data}"
 export SPAR_VAL_ENABLE="${SPAR_VAL_ENABLE:-1}"
 export SPAR_VAL_BATCH_SIZE="${SPAR_VAL_BATCH_SIZE:-16}"
@@ -148,7 +152,9 @@ pass_into_container SSL_CERT_DIR /etc/ssl/certs
 pass_into_container REQUESTS_CA_BUNDLE "$CA_BUNDLE"
 pass_into_container CURL_CA_BUNDLE "$CA_BUNDLE"
 pass_into_container MODEL_PATH "$MODEL_PATH"
-pass_into_container DATASET_DIR "${CONTAINER_ROOT}/data/spar-vero-rl"
+pass_into_container DATASET_ID "$DATASET_ID"
+pass_into_container DATASET_DIR "${CONTAINER_ROOT}/data/spar-vero-rl-filtered"
+pass_into_container FILTER_OVERLONG_PROMPTS "$FILTER_OVERLONG_PROMPTS"
 pass_into_container SPAR_IMAGE_ROOT "${CONTAINER_ROOT}/data"
 pass_into_container SPAR_VAL_ENABLE "$SPAR_VAL_ENABLE"
 pass_into_container SPAR_VAL_BATCH_SIZE "$SPAR_VAL_BATCH_SIZE"
@@ -196,10 +202,13 @@ echo "CPUs: ${SLURM_CPUS_PER_TASK:-unknown}  mem=${SLURM_MEM_PER_NODE:-512G}  da
 echo "Batch: train=$TRAIN_BATCH_SIZE  ppo_mini=$PPO_MIMI_BATCH_SIZE  rollout_n=$ROLLOUT_N"
 echo "Threads: OMP=$OMP_NUM_THREADS  TOKENIZERS_PARALLELISM=$TOKENIZERS_PARALLELISM  ray object store bytes=$RAY_OBJECT_STORE_MEMORY_BYTES"
 echo "Max tokens: prompt=$MAX_PROMPT_LENGTH response=$MAX_RESPONSE_LENGTH"
+echo "Dataset: $DATASET_ID  dir=$DATASET_DIR  filter_overlong_prompts=$FILTER_OVERLONG_PROMPTS"
 echo "W&B: enable=$WANDB_ENABLE mode=$WANDB_MODE project=$WANDB_PROJECT entity=$WANDB_ENTITY"
 
 start_time=$(date +%s)
 
+# Slurm may export ROCm visibility too; clear it after container environment
+# setup on this NVIDIA-only job, preserving CUDA_VISIBLE_DEVICES for Ray.
 srun "$CONTAINER_CMD" exec --nv \
     --bind "${REPO_ROOT}:${CONTAINER_ROOT}" \
     --bind "${HF_HOME}:/hf_cache" \
@@ -207,6 +216,7 @@ srun "$CONTAINER_CMD" exec --nv \
     --bind /etc/pki:/etc/pki:ro \
     --pwd "$CONTAINER_ROOT" \
     "$VCSD_IMAGE" \
+    env -u ROCR_VISIBLE_DEVICES -u HIP_VISIBLE_DEVICES \
     bash "$CONTAINER_TRAIN_SCRIPT" \
     "+ray_kwargs.ray_init.object_store_memory=${RAY_OBJECT_STORE_MEMORY_BYTES}" \
     "$@"

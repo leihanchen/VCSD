@@ -1,8 +1,9 @@
 #!/bin/bash
-# VCSD contrast-standard launcher using the cvis-tmu/spar-vero-rl training set.
+# VCSD contrast-standard launcher using the pre-filtered SPAR-Vero RL set.
 #
-# The dataset splits are downloaded and converted to local Parquet only when this
-# script is run. Referenced SPAR-7M images must already exist under SPAR_IMAGE_ROOT.
+# Defaults to cvis-tmu/spar-vero-rl-filtered (missing images + overlong prompts
+# already dropped). Splits are downloaded to local Parquet only when missing.
+# Referenced SPAR-7M images must already exist under SPAR_IMAGE_ROOT.
 #
 # Usage:
 #   bash scripts/run_experiment_contrast_standard_spar_vero_rl.sh
@@ -11,10 +12,11 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-DATASET_ID="${DATASET_ID:-cvis-tmu/spar-vero-rl}"
+DATASET_ID="${DATASET_ID:-cvis-tmu/spar-vero-rl-filtered}"
 DATASET_TRAIN_SPLIT="${DATASET_TRAIN_SPLIT:-${DATASET_SPLIT:-train}}"
 DATASET_VAL_SPLIT="${DATASET_VAL_SPLIT:-test}"
-DATASET_DIR="${DATASET_DIR:-${PROJECT_ROOT}/data/spar-vero-rl}"
+DATASET_DIR="${DATASET_DIR:-${PROJECT_ROOT}/data/spar-vero-rl-filtered}"
+FILTER_OVERLONG_PROMPTS="${FILTER_OVERLONG_PROMPTS:-False}"
 TASK_TRAIN_FILE="${TASK_TRAIN_FILE:-${DATASET_DIR}/${DATASET_TRAIN_SPLIT}.parquet}"
 TASK_VAL_FILE="${TASK_VAL_FILE:-${DATASET_DIR}/${DATASET_VAL_SPLIT}.parquet}"
 SPAR_IMAGE_ROOT="${SPAR_IMAGE_ROOT:-${PROJECT_ROOT}/data}"
@@ -71,7 +73,7 @@ SPAR_ARGS=(
     data.custom_cls.path="$SPAR_DATASET_CLASS"
     data.custom_cls.name=SparVeroRLDataset
     +data.image_root="$SPAR_IMAGE_ROOT"
-    data.filter_overlong_prompts=True
+    data.filter_overlong_prompts="$FILTER_OVERLONG_PROMPTS"
     data.filter_overlong_prompts_workers="${SPAR_FILTER_WORKERS:-4}"
 )
 
