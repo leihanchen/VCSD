@@ -11,18 +11,41 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export MODEL_PATH="${MODEL_PATH:-Qwen/Qwen3.5-2B}"
+export MODEL_SIZE="${MODEL_SIZE:-2B}"
+export EXPERIMENT_NAME="${EXPERIMENT_NAME:-Vision-OPD-contrast-standard-$(basename "$MODEL_PATH")-spar}"
+
+# Fail before filtering or allocating Ray model workers if the image cannot
+# load this architecture. Derive special IDs from the actual tokenizer.
+model_metadata=$(python3 - <<'PY'
+import json
+import os
+from transformers import AutoConfig, AutoTokenizer
+
+path = os.environ["MODEL_PATH"]
+config = AutoConfig.from_pretrained(path)
+tokenizer = AutoTokenizer.from_pretrained(path)
+ids = sorted({x for x in (tokenizer.pad_token_id, tokenizer.eos_token_id) if x is not None})
+print(config.model_type)
+print(getattr(getattr(config, "vision_config", None), "patch_size", 14))
+print(json.dumps(ids, separators=(",", ":")))
+PY
+)
+mapfile -t model_metadata_lines <<< "$model_metadata"
+export VCSD_CONTRAST_EXCLUDE_TOKEN_IDS="${VCSD_CONTRAST_EXCLUDE_TOKEN_IDS:-${model_metadata_lines[2]}}"
 
 DATASET_ID="${DATASET_ID:-cvis-tmu/spar-vero-rl-filtered}"
 DATASET_TRAIN_SPLIT="${DATASET_TRAIN_SPLIT:-${DATASET_SPLIT:-train}}"
 DATASET_VAL_SPLIT="${DATASET_VAL_SPLIT:-test}"
 DATASET_DIR="${DATASET_DIR:-${PROJECT_ROOT}/data/spar-vero-rl-filtered}"
-FILTER_OVERLONG_PROMPTS="${FILTER_OVERLONG_PROMPTS:-False}"
+# The published subset was filtered with Qwen3-VL; recheck with this model.
+FILTER_OVERLONG_PROMPTS="${FILTER_OVERLONG_PROMPTS:-True}"
 TASK_TRAIN_FILE="${TASK_TRAIN_FILE:-${DATASET_DIR}/${DATASET_TRAIN_SPLIT}.parquet}"
 TASK_VAL_FILE="${TASK_VAL_FILE:-${DATASET_DIR}/${DATASET_VAL_SPLIT}.parquet}"
 SPAR_IMAGE_ROOT="${SPAR_IMAGE_ROOT:-${PROJECT_ROOT}/data}"
 SPAR_VAL_ENABLE="${SPAR_VAL_ENABLE:-1}"
 SPAR_VAL_BATCH_SIZE="${SPAR_VAL_BATCH_SIZE:-16}"
-SPAR_VAL_TEST_FREQ="${SPAR_VAL_TEST_FREQ:-10}"
+SPAR_VAL_TEST_FREQ="${SPAR_VAL_TEST_FREQ:-50}"
 SPAR_VAL_BEFORE_TRAIN="${SPAR_VAL_BEFORE_TRAIN:-True}"
 SPAR_DATASET_CLASS="pkg://verl/utils/dataset/spar_vero_rl_dataset"
 SPAR_REWARD_FILE="${PROJECT_ROOT}/scripts/spar_vero_reward.py"
@@ -70,12 +93,27 @@ export TASK_TRAIN_FILE
 export ANSWER_VAL_ENABLE=0
 
 SPAR_ARGS=(
+    data.image_patch_size="${model_metadata_lines[1]}"
     data.custom_cls.path="$SPAR_DATASET_CLASS"
     data.custom_cls.name=SparVeroRLDataset
     +data.image_root="$SPAR_IMAGE_ROOT"
     data.filter_overlong_prompts="$FILTER_OVERLONG_PROMPTS"
     data.filter_overlong_prompts_workers="${SPAR_FILTER_WORKERS:-4}"
 )
+
+if [[ "${model_metadata_lines[0]}" == qwen3_5 ]]; then
+    # Follow the upstream Qwen3.5 FSDP recipe's padded, single-sequence path.
+    SPAR_ARGS+=(
+        actor_rollout_ref.model.use_remove_padding=False
+        actor_rollout_ref.actor.use_dynamic_bsz=False
+        actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1
+        actor_rollout_ref.actor.use_torch_compile=False
+        actor_rollout_ref.actor.strategy=fsdp2
+        actor_rollout_ref.ref.strategy=fsdp2
+        actor_rollout_ref.ref.log_prob_use_dynamic_bsz=False
+        actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=False
+    )
+fi
 
 if [[ "$SPAR_VAL_ENABLE" == "1" ]]; then
     prepare_split "$DATASET_VAL_SPLIT" "$TASK_VAL_FILE"

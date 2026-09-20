@@ -1,0 +1,27 @@
+Bootstrap: localimage
+From: VCSD.sif
+
+%labels
+    Description "VCSD Qwen3.5 compatibility image, based on existing CUDA 13 / vLLM 0.18 image"
+    TransformersRevision cc7ab9be508ce6ed3637bba9e50367b29b742dc6
+
+%post
+    set -eu
+    export PATH=/opt/vcsd/bin:$PATH
+    export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    export REQUESTS_CA_BUNDLE=$SSL_CERT_FILE
+    export PIP_CERT=$SSL_CERT_FILE
+    # Version matrix used by upstream verl's Qwen3.5-2B FSDP example.
+    # vLLM 0.18 metadata declares Transformers<5, despite that upstream recipe
+    # using this Transformers 5.3 development revision. Validate imports below.
+    python -m pip install --no-cache-dir "https://github.com/huggingface/transformers/archive/cc7ab9be508ce6ed3637bba9e50367b29b742dc6.tar.gz"
+
+%test
+    /opt/vcsd/bin/python - <<'PYTEST'
+from transformers import AutoConfig
+from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForConditionalGeneration
+from vllm.model_executor.models.registry import ModelRegistry
+assert AutoConfig.for_model("qwen3_5").model_type == "qwen3_5"
+assert "Qwen3_5ForConditionalGeneration" in ModelRegistry.get_supported_archs()
+print("Qwen3.5 Transformers class and vLLM architecture registration verified")
+PYTEST

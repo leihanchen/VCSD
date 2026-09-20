@@ -3,17 +3,20 @@
 #SBATCH --job-name=vcsd_spar_vero_rl
 #SBATCH --output=vcsd_spar_vero_rl_%j.out
 #SBATCH --error=vcsd_spar_vero_rl_%j.err
-#SBATCH --nodes=1
+#SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
-#SBATCH --gpus-per-node=h100:2
-#SBATCH --time=8:00:00
+#SBATCH --gpus-per-node=h100:4
+#SBATCH --time=2-00:00:00
+# Fir has four H100s per node: two nodes provide eight GPUs total.
+# The Qwen3.5 architecture and two-node communication need benchmarking;
+# the 48-hour allocation is not a guarantee that a full epoch will finish.
 # Job 57684347 OOMed at the 192G cap during the first 96x8 multimodal rollout.
 # Keep the worker-count safeguards and provide enough host RAM for the rollout
 # payloads while retaining a conservative per-step batch size.
 # Job 57796193 timed out after 4h at ~57% of the 8192-token prompt filter.
 # Use scripts/precompute_spar_vero_rl_filtered.slurm first, then train on
-# data/spar-vero-rl-filtered with filter_overlong_prompts=False.
+# data/spar-vero-rl-filtered. Recheck token lengths for the Qwen3.5 processor.
 #SBATCH --mem=256G
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=leihan.chen@torontomu.ca
@@ -43,7 +46,7 @@ resolve_repo_root() {
 
 REPO_ROOT="$(resolve_repo_root)"
 CONTAINER_ROOT="/opt/VCSD"
-VCSD_IMAGE="${VCSD_IMAGE:-${REPO_ROOT}/VCSD.sif}"
+VCSD_IMAGE="${VCSD_IMAGE:-${REPO_ROOT}/VCSD-qwen35.sif}"
 HOST_TRAIN_SCRIPT="${REPO_ROOT}/scripts/run_experiment_contrast_standard_spar_vero_rl.sh"
 CONTAINER_TRAIN_SCRIPT="${CONTAINER_ROOT}/scripts/run_experiment_contrast_standard_spar_vero_rl.sh"
 
@@ -64,7 +67,7 @@ if [[ ! -x "$HOST_TRAIN_SCRIPT" ]]; then
 fi
 if [[ ! -f "$VCSD_IMAGE" ]]; then
     echo "ERROR: container image not found: $VCSD_IMAGE" >&2
-    echo "       Build it first: $CONTAINER_CMD build --fakeroot $VCSD_IMAGE ${REPO_ROOT}/VCSD.def" >&2
+    echo "       From $REPO_ROOT, build: $CONTAINER_CMD build --fakeroot $VCSD_IMAGE VCSD-qwen35.def" >&2
     exit 1
 fi
 if [[ ! -d "${REPO_ROOT}/data/SPAR-7M" ]]; then
@@ -93,24 +96,25 @@ export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${HF_HOME}/datasets}"
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-0}"
 export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-0}"
 export HF_DATASETS_OFFLINE="${HF_DATASETS_OFFLINE:-0}"
-export MODEL_PATH="${MODEL_PATH:-Qwen/Qwen3-VL-2B-Instruct}"
+export MODEL_PATH="${MODEL_PATH:-Qwen/Qwen3.5-2B}"
 export DATASET_ID="${DATASET_ID:-cvis-tmu/spar-vero-rl-filtered}"
 export DATASET_DIR="${DATASET_DIR:-${REPO_ROOT}/data/spar-vero-rl-filtered}"
-export FILTER_OVERLONG_PROMPTS="${FILTER_OVERLONG_PROMPTS:-False}"
+export FILTER_OVERLONG_PROMPTS="${FILTER_OVERLONG_PROMPTS:-True}"
 export SPAR_IMAGE_ROOT="${SPAR_IMAGE_ROOT:-${REPO_ROOT}/data}"
 export SPAR_VAL_ENABLE="${SPAR_VAL_ENABLE:-1}"
 export SPAR_VAL_BATCH_SIZE="${SPAR_VAL_BATCH_SIZE:-16}"
-export SPAR_VAL_TEST_FREQ="${SPAR_VAL_TEST_FREQ:-10}"
+export SPAR_VAL_TEST_FREQ="${SPAR_VAL_TEST_FREQ:-50}"
 export SPAR_VAL_BEFORE_TRAIN="${SPAR_VAL_BEFORE_TRAIN:-True}"
-export TRAINER_N_GPUS_PER_NODE="${TRAINER_N_GPUS_PER_NODE:-${SLURM_GPUS_ON_NODE:-2}}"
+export TRAINER_N_GPUS_PER_NODE="${TRAINER_N_GPUS_PER_NODE:-${SLURM_GPUS_ON_NODE:-4}}"
+export WORLD_SIZE="${SLURM_JOB_NUM_NODES:-2}"
 # Do not map SLURM_CPUS_PER_TASK onto Python workers. 32 filter + 32 dataloader
 # processes were the 57542414 host-RAM cliff. Keep dataloader workers at four;
 # raise prompt-filter workers to 16 so the 8192-token VL filter can finish.
 export DATA_DATALOADER_NUM_WORKERS="${DATA_DATALOADER_NUM_WORKERS:-4}"
 export SPAR_FILTER_WORKERS="${SPAR_FILTER_WORKERS:-16}"
 export ROLLOUT_AGENT_NUM_WORKERS="${ROLLOUT_AGENT_NUM_WORKERS:-4}"
-export TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-4}"
-export PPO_MIMI_BATCH_SIZE="${PPO_MIMI_BATCH_SIZE:-4}"
+export TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-8}"
+export PPO_MIMI_BATCH_SIZE="${PPO_MIMI_BATCH_SIZE:-8}"
 export ROLLOUT_N="${ROLLOUT_N:-4}"
 export MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-8192}"
 export MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-1024}"
@@ -119,7 +123,7 @@ export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
 export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 # Ray 2.53.0 does not consume RAY_DEFAULT_OBJECT_STORE_MEMORY_PROPORTION;
-# pass an explicit ray.init object_store_memory override below instead.
+# pass explicit object-store memory to ray start on each node instead.
 export RAY_OBJECT_STORE_MEMORY_BYTES="${RAY_OBJECT_STORE_MEMORY_BYTES:-8589934592}"
 
 mkdir -p "$HF_HUB_CACHE" "$HF_DATASETS_CACHE" "$DATASET_DIR"
@@ -161,6 +165,7 @@ pass_into_container SPAR_VAL_BATCH_SIZE "$SPAR_VAL_BATCH_SIZE"
 pass_into_container SPAR_VAL_TEST_FREQ "$SPAR_VAL_TEST_FREQ"
 pass_into_container SPAR_VAL_BEFORE_TRAIN "$SPAR_VAL_BEFORE_TRAIN"
 pass_into_container TRAINER_N_GPUS_PER_NODE "$TRAINER_N_GPUS_PER_NODE"
+pass_into_container WORLD_SIZE "$WORLD_SIZE"
 pass_into_container DATA_DATALOADER_NUM_WORKERS "$DATA_DATALOADER_NUM_WORKERS"
 pass_into_container SPAR_FILTER_WORKERS "$SPAR_FILTER_WORKERS"
 pass_into_container ROLLOUT_AGENT_NUM_WORKERS "$ROLLOUT_AGENT_NUM_WORKERS"
@@ -192,7 +197,7 @@ echo "Repository: $REPO_ROOT"
 echo "Container runtime: $CONTAINER_CMD"
 echo "Container image: $VCSD_IMAGE"
 echo "Node: ${SLURMD_NODENAME:-unknown}"
-echo "GPUs: $TRAINER_N_GPUS_PER_NODE"
+echo "GPUs: $WORLD_SIZE nodes x $TRAINER_N_GPUS_PER_NODE GPUs per node"
 echo "Model: $MODEL_PATH (HF offline=$HF_HUB_OFFLINE, datasets offline=$HF_DATASETS_OFFLINE, Transformers offline=$TRANSFORMERS_OFFLINE)"
 echo "TLS CA bundle: $CA_BUNDLE"
 echo "Dataset cache: $DATASET_DIR"
@@ -209,7 +214,19 @@ start_time=$(date +%s)
 
 # Slurm may export ROCm visibility too; clear it after container environment
 # setup on this NVIDIA-only job, preserving CUDA_VISIBLE_DEVICES for Ray.
-srun "$CONTAINER_CMD" exec --nv \
+mapfile -t allocated_nodes < <(scontrol show hostnames "$SLURM_JOB_NODELIST")
+export RAY_HEAD_IP
+RAY_HEAD_IP=$(getent ahostsv4 "${allocated_nodes[0]}" | awk 'NR==1 {ip=$1} END {print ip}')
+[[ -n "$RAY_HEAD_IP" ]] || { echo "Cannot resolve Ray head address" >&2; exit 1; }
+export RAY_PORT="${RAY_PORT:-$((15000 + SLURM_JOB_ID % 20000))}"
+mkdir -p "${REPO_ROOT}/outputs"
+ray_state_host=$(mktemp -d "${REPO_ROOT}/outputs/ray-${SLURM_JOB_ID}.XXXXXX")
+pass_into_container RAY_HEAD_IP "$RAY_HEAD_IP"
+pass_into_container RAY_PORT "$RAY_PORT"
+pass_into_container RAY_JOB_STATE_DIR "${CONTAINER_ROOT}/outputs/$(basename "$ray_state_host")"
+pass_into_container RAY_OBJECT_STORE_MEMORY_BYTES "$RAY_OBJECT_STORE_MEMORY_BYTES"
+
+srun --kill-on-bad-exit=1 "$CONTAINER_CMD" exec --nv \
     --bind "${REPO_ROOT}:${CONTAINER_ROOT}" \
     --bind "${HF_HOME}:/hf_cache" \
     --bind /etc/ssl/certs:/etc/ssl/certs:ro \
@@ -217,8 +234,7 @@ srun "$CONTAINER_CMD" exec --nv \
     --pwd "$CONTAINER_ROOT" \
     "$VCSD_IMAGE" \
     env -u ROCR_VISIBLE_DEVICES -u HIP_VISIBLE_DEVICES \
-    bash "$CONTAINER_TRAIN_SCRIPT" \
-    "+ray_kwargs.ray_init.object_store_memory=${RAY_OBJECT_STORE_MEMORY_BYTES}" \
+    bash "${CONTAINER_ROOT}/scripts/run_spar_ray_node.sh" "$CONTAINER_TRAIN_SCRIPT" \
     "$@"
 
 end_time=$(date +%s)

@@ -17,5 +17,5 @@ exec bash "$(dirname "$0")/run_vcsd.sh" \
     actor_rollout_ref.actor.self_distillation.vcsd_target_mode=contrast \
     actor_rollout_ref.actor.self_distillation.vcsd_contrast_alpha=1.0 \
     actor_rollout_ref.actor.self_distillation.vcsd_contrast_beta=0.1 \
-    'actor_rollout_ref.actor.self_distillation.vcsd_contrast_exclude_token_ids=[151643,151645]' \
+    "actor_rollout_ref.actor.self_distillation.vcsd_contrast_exclude_token_ids=${VCSD_CONTRAST_EXCLUDE_TOKEN_IDS:-[151643,151645]}" \
     "$@"
